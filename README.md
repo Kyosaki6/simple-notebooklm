@@ -1,5 +1,7 @@
 # Simple NotebookLM (RAG Learning System)
 
+**Tác giả:** Huỳnh Quang Thịnh — **MSSV:** 24100847
+
 Hỏi đáp + tóm tắt + quiz + flashcards trên PDF cá nhân, theo kiến trúc RAG
 (Qdrant + sentence-transformers, LLM cắm qua provider).
 
