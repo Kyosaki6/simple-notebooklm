@@ -1,0 +1,5 @@
+Tóm tắt NGỮ CẢNH dưới đây. Trả về JSON duy nhất: {"summary": "...", "key_points": ["...", ...]}.
+{% for c in chunks %}
+[S{{ loop.index }}] {{ c.text }}
+---
+{% endfor %}

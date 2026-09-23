@@ -1,0 +1,6 @@
+Tạo {{ count }} câu hỏi trắc nghiệm từ NGỮ CẢNH. Trả về JSON duy nhất:
+{"items": [{"question": "...", "options": ["A","B","C","D"], "correct_index": 0, "explanation": "...", "source_markers": ["S1"], "difficulty": "easy", "topic": "..."}]}
+{% for c in chunks %}
+[S{{ loop.index }}] {{ c.text }}
+---
+{% endfor %}

@@ -1,0 +1,6 @@
+Tạo {{ count }} flashcards từ NGỮ CẢNH. Trả về JSON duy nhất:
+{"cards": [{"front": "...", "back": "...", "hint": "...", "topic": "...", "source_markers": ["S1"]}]}
+{% for c in chunks %}
+[S{{ loop.index }}] {{ c.text }}
+---
+{% endfor %}

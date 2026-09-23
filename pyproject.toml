@@ -1,0 +1,17 @@
+[project]
+name = "simple-notebooklm"
+version = "0.1.0"
+description = "Simple NotebookLM with RAG: Q&A, summarize, quiz, flashcards over PDFs"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi", "uvicorn", "typer", "streamlit", "httpx",
+  "pydantic", "pydantic-settings", "jinja2",
+  "langchain-core", "langchain-community", "langchain-text-splitters",
+  "langchain-huggingface", "langchain-qdrant", "langchain-experimental",
+  "langchain-google-genai", "langchain-openai",
+  "qdrant-client", "sentence-transformers", "pypdf",
+  "ragas", "datasets", "pandas",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

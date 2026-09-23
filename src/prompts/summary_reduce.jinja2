@@ -1,0 +1,4 @@
+Tổng hợp (REDUCE) các bản tóm tắt con thành một bản cuối. Trả về JSON: {"summary": "...", "key_points": [...]}.
+{% for p in partials %}
+- {{ p.summary }} | ý: {{ p.key_points | join('; ') }}
+{% endfor %}
