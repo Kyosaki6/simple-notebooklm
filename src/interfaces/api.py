@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..filters import MetadataFilter, filters_to_dict
@@ -40,6 +40,16 @@ app = FastAPI(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "name": "RAG Learning API",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": ["/documents", "/upload", "/ask", "/summarize", "/quiz", "/flashcards"],
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -63,17 +73,26 @@ def ask(req: AskRequest):
 
 @app.post("/summarize", response_model=Summary)
 def summarize(req: SummarizeRequest):
-    return summarize_learning(document=req.document, query=req.query,
-                              filters=filters_to_dict(req.filters), k=req.k)
+    try:
+        return summarize_learning(document=req.document, query=req.query,
+                                  filters=filters_to_dict(req.filters), k=req.k)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @app.post("/quiz", response_model=QuizSet)
 def quiz(req: QuizRequest):
-    return generate_quiz(document=req.document, query=req.query,
-                         filters=filters_to_dict(req.filters), count=req.count, k=req.k)
+    try:
+        return generate_quiz(document=req.document, query=req.query,
+                             filters=filters_to_dict(req.filters), count=req.count, k=req.k)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @app.post("/flashcards", response_model=FlashcardSet)
 def flashcards(req: FlashcardsRequest):
-    return generate_flashcards(document=req.document, query=req.query,
-                               filters=filters_to_dict(req.filters), count=req.count, k=req.k)
+    try:
+        return generate_flashcards(document=req.document, query=req.query,
+                                   filters=filters_to_dict(req.filters), count=req.count, k=req.k)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e

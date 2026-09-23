@@ -31,31 +31,102 @@ def _resolve_target(document, query, filters, k, retrieval_k):
 def _parse_json(text: str):
     cleaned = text.strip()
     if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[-1].removesuffix("```").strip()
-        # handle ```json prefix removal artifact
+        # strip ```json ... ``` fences (possibly with language tag)
+        lines = cleaned.split("\n")
+        # drop opening fence
+        lines = lines[1:]
+        # drop closing fence if present
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
         if cleaned.startswith("json"):
             cleaned = cleaned[4:].strip()
         cleaned = cleaned.removesuffix("```").strip()
-    obj = json.loads(cleaned)
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # LLM often adds prose around JSON — extract first {...} block.
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                obj = json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"LLM did not return valid JSON: {e}. Raw preview: {cleaned[:500]!r}"
+                ) from e
+        else:
+            raise RuntimeError(
+                f"LLM did not return valid JSON. Raw preview: {cleaned[:500]!r}"
+            )
     if not isinstance(obj, (dict, list)):
         raise RuntimeError("Expected JSON object or array.")
     return obj
 
 
-def _validate_summary_payload(payload: dict) -> tuple[str, list[str]]:
+def _validate_summary_payload(payload: dict, raw: str = "") -> tuple[str, list[str]]:
     if isinstance(payload, list):
-        raise RuntimeError("Expected summary object.")
-    summary = str(payload.get("summary", "")).strip()
-    key_points = [str(x) for x in (payload.get("key_points") or [])]
+        # some LLMs return [{"summary": ...}] — accept single-element list
+        if len(payload) == 1 and isinstance(payload[0], dict):
+            payload = payload[0]
+        else:
+            raise RuntimeError(
+                f"Expected summary object, got list. Raw preview: {raw[:500]!r}"
+            )
+    # accept alternative keys real LLMs often use
+    summary = payload.get("summary", "")
+    for alt in ("summary_text", "overview", "tom_tat", "tóm_tắt", "text"):
+        if not str(summary).strip() and payload.get(alt):
+            summary = payload.get(alt)
+    summary = str(summary or "").strip()
+    key_points = payload.get("key_points")
+    for alt in ("keypoints", "keyPoints", "points", "bullets", "y_chinh", "ý_chính"):
+        if key_points is None and payload.get(alt) is not None:
+            key_points = payload.get(alt)
+    key_points = [str(x) for x in (key_points or [])]
     if not summary:
-        raise RuntimeError("Empty summary produced.")
+        raise RuntimeError(
+            f"Empty summary produced. Payload keys: {list(payload.keys())}. "
+            f"Raw preview: {raw[:500]!r}"
+        )
     return summary, key_points
 
 
-def _validate_items(payload, key, model_class, dedup_field, label, valid_markers):
+def _invoke_json(prompt: str, label: str, retries: int = 1):
+    """Invoke LLM and parse JSON, retrying once with a stricter instruction.
+
+    Returns (payload, raw). Raises RuntimeError with raw preview on failure
+    so uvicorn logs show what the LLM actually returned.
+    """
+    from .llm import invoke_llm
+
+    last_err: Exception | None = None
+    current = prompt
+    for attempt in range(retries + 1):
+        raw = invoke_llm(current)
+        try:
+            payload = _parse_json(raw)
+            return payload, raw
+        except RuntimeError as e:
+            last_err = e
+            print(f"[learning:{label}] attempt {attempt + 1} parse failed: {e}")
+            print(f"[learning:{label}] raw preview: {raw[:1000]!r}")
+        current = (
+            prompt
+            + "\n\nCHỈ trả về JSON hợp lệ, không thêm lời dẫn, "
+            "không dùng markdown, không để chuỗi rỗng."
+        )
+    raise RuntimeError(f"LLM did not return valid JSON for {label}: {last_err}")
+
+
+def _validate_items(payload, key, model_class, dedup_field, label, valid_markers, raw: str = ""):
     raw_items = payload.get(key) if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
-        raise RuntimeError(f"No valid {label} produced.")
+        raise RuntimeError(
+            f"No valid {label} produced. Payload keys: "
+            f"{list(payload.keys()) if isinstance(payload, dict) else type(payload)}. "
+            f"Raw preview: {raw[:500]!r}"
+        )
     items, seen = [], set()
     for raw in raw_items:
         try:
@@ -74,8 +145,6 @@ def _validate_items(payload, key, model_class, dedup_field, label, valid_markers
 
 
 def summarize(document=None, query=None, filters=None, k=None) -> Summary:
-    from .llm import invoke_llm
-
     chunks, scope, target = _resolve_target(
         document, query, filters, k, settings.summarize_retrieval_k
     )
@@ -83,46 +152,48 @@ def summarize(document=None, query=None, filters=None, k=None) -> Summary:
         return Summary(scope=scope, target=target, summary="Không có nội dung phù hợp.", key_points=[])
     if len(chunks) <= settings.summarize_batch_size:
         prompt = render_prompt(SUMMARY_SINGLE_TEMPLATE, chunks=chunks)
-        payload = _parse_json(invoke_llm(prompt))
-        summary_text, key_points = _validate_summary_payload(payload)
+        payload, raw = _invoke_json(prompt, "summarize-single")
+        summary_text, key_points = _validate_summary_payload(payload, raw)
     else:
         partials = []
         for start in range(0, len(chunks), settings.summarize_batch_size):
             batch = chunks[start: start + settings.summarize_batch_size]
-            payload = _parse_json(invoke_llm(render_prompt(SUMMARY_MAP_TEMPLATE, chunks=batch)))
-            summary_text, key_points = _validate_summary_payload(payload)
+            payload, raw = _invoke_json(
+                render_prompt(SUMMARY_MAP_TEMPLATE, chunks=batch),
+                f"summarize-map-{start // settings.summarize_batch_size}",
+            )
+            summary_text, key_points = _validate_summary_payload(payload, raw)
             partials.append({"summary": summary_text, "key_points": key_points})
-        payload = _parse_json(invoke_llm(render_prompt(SUMMARY_REDUCE_TEMPLATE, partials=partials)))
-        summary_text, key_points = _validate_summary_payload(payload)
+        payload, raw = _invoke_json(
+            render_prompt(SUMMARY_REDUCE_TEMPLATE, partials=partials),
+            "summarize-reduce",
+        )
+        summary_text, key_points = _validate_summary_payload(payload, raw)
     return Summary(scope=scope, target=target, summary=summary_text, key_points=key_points,
                    citations=format_citations(chunks), chunks=chunks)
 
 
 def generate_quiz(document=None, query=None, filters=None, count=None, k=None) -> QuizSet:
-    from .llm import invoke_llm
-
     chunks, scope, target = _resolve_target(
         document, query, filters, k, settings.generation_retrieval_k
     )
     n = count or settings.quiz_default_count
     valid_markers = {f"S{i}" for i in range(1, len(chunks) + 1)}
     prompt = render_prompt(QUIZ_TEMPLATE, chunks=chunks, count=n)
-    payload = _parse_json(invoke_llm(prompt))
-    items = _validate_items(payload, "items", QuizItem, "question", "quiz items", valid_markers)
+    payload, raw = _invoke_json(prompt, "quiz")
+    items = _validate_items(payload, "items", QuizItem, "question", "quiz items", valid_markers, raw)
     return QuizSet(scope=scope, target=target, items=items, chunks=chunks,
                    citations=format_citations(chunks))
 
 
 def generate_flashcards(document=None, query=None, filters=None, count=None, k=None) -> FlashcardSet:
-    from .llm import invoke_llm
-
     chunks, scope, target = _resolve_target(
         document, query, filters, k, settings.generation_retrieval_k
     )
     n = count or settings.flashcards_default_count
     valid_markers = {f"S{i}" for i in range(1, len(chunks) + 1)}
     prompt = render_prompt(FLASHCARDS_TEMPLATE, chunks=chunks, count=n)
-    payload = _parse_json(invoke_llm(prompt))
-    cards = _validate_items(payload, "cards", Flashcard, "front", "flashcards", valid_markers)
+    payload, raw = _invoke_json(prompt, "flashcards")
+    cards = _validate_items(payload, "cards", Flashcard, "front", "flashcards", valid_markers, raw)
     return FlashcardSet(scope=scope, target=target, cards=cards, chunks=chunks,
                         citations=format_citations(chunks))

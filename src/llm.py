@@ -49,24 +49,50 @@ class _EchoLLM:
     """Offline fallback so UI/CLI/eval work without GPU or API keys."""
 
     def invoke(self, messages):
+        import json
+
         prompt = messages[0].content if messages else ""
         snippet = prompt[:1200].replace("\n", " ")
+        # Only inspect the instruction line — chunk content below may
+        # contain words like "quiz"/"flashcard"/"items" and cause
+        # misclassification (e.g. summarize returning quiz JSON).
+        header = prompt.split("\n", 1)[0].lower()
+
+        if "trắc nghiệm" in header or "quiz" in header:
+            content = json.dumps({
+                "items": [{
+                    "question": "Demo question?",
+                    "options": ["A", "B", "C", "D"],
+                    "correct_index": 0,
+                    "explanation": "Echo fallback.",
+                    "source_markers": ["S1"],
+                }]
+            }, ensure_ascii=False)
+        elif "flashcard" in header:
+            content = json.dumps({
+                "cards": [{
+                    "front": "Demo front",
+                    "back": "Demo back",
+                    "hint": None,
+                    "topic": "demo",
+                    "source_markers": ["S1"],
+                }]
+            }, ensure_ascii=False)
+        else:
+            # json.dumps escapes quotes/newlines in snippet — naive
+            # f-string interpolation here previously produced invalid JSON
+            # whenever chunk text contained `"` (JSONDecodeError at col ~187).
+            content = json.dumps({
+                "summary": ("Demo (echo LLM): no real LLM configured. "
+                            "Set RAG_LLM_PROVIDER=gemini|vllm|hf_local."),
+                "key_points": [f"Prompt preview: {snippet[:200]}"],
+            }, ensure_ascii=False)
+
         class R:
-            content = (
-                '{"summary": "Demo (echo LLM): no real LLM configured. '
-                'Set RAG_LLM_PROVIDER=gemini|vllm|hf_local.", '
-                f'"key_points": ["Prompt preview: {snippet[:200]}"]}}'
-            )
-        # naive: if prompt asks for quiz/flashcards return valid JSON shapes
-        low = prompt.lower()
-        if "quiz" in low and "json" in low:
-            R.content = ('{"items": [{"question": "Demo question?", '
-                         '"options": ["A","B","C","D"], "correct_index": 0, '
-                         '"explanation": "Echo fallback.", "source_markers": ["S1"]}]}')
-        elif "flashcard" in low:
-            R.content = ('{"cards": [{"front": "Demo front", "back": "Demo back", '
-                         '"hint": null, "topic": "demo", "source_markers": ["S1"]}]}')
-        return R()
+            pass
+        r = R()
+        r.content = content
+        return r
 
 
 @lru_cache(maxsize=4)
